@@ -1,0 +1,662 @@
+# Shadow TV — Backend (all files combined)
+
+Each section below is one file from the project. Split them back out into their own paths to run the project (see the folder structure noted in each header).
+
+
+## FILE: README.md
+
+```markdown
+# Shadow TV — Backend
+
+A runnable Express skeleton implementing the auth, payments, and video-access
+flows described in the architecture docs. It works out of the box with
+**stubbed** providers so you can see the request flow end-to-end without any
+real credentials — swap three functions for real SDK calls to go live.
+
+## Run it
+
+```bash
+npm install
+cp .env.example .env   # then fill in real secrets when you're ready to go live
+npm start
+```
+
+Server starts on `http://localhost:4000`. Try:
+
+```bash
+curl http://localhost:4000/health
+curl -X POST http://localhost:4000/api/auth/session -H "Content-Type: application/json" \
+  -d '{"idToken":"demo-token-123456"}'
+```
+
+## What's real vs. stubbed
+
+| File | Real | Stubbed (clearly marked, swap for production) |
+|---|---|---|
+| `src/auth.js` | JWT session issuing, refresh, revocation, `requireAuth`/`requireAdmin` middleware | Firebase ID token verification (`verifyIdTokenStub`) |
+| `src/payments.js` | Signature verification (HMAC), webhook event handling, access-check logic, rate limiting | Razorpay SDK calls (`razorpayStub`) |
+| `src/video.js` | Access-control choke point on `/episodes/:id/playback`, signed-token issuing, webhook handling | Cloudflare Stream direct-upload request (`requestDirectUploadStub`) |
+| `src/db.js` | — | Everything — this is an in-memory store standing in for Postgres/Mongo |
+
+Every stub has a comment showing the exact real API call it replaces (see
+`src/auth.js`, `src/payments.js`, `src/video.js` for the commented-out real
+version above each stub).
+
+## Going to production, in order
+
+1. **Database**: replace `src/db.js`'s Map-based store with real Postgres
+   queries — every other file only talks to the database through this
+   module, so this is a contained swap.
+2. **Firebase Admin SDK**: replace `verifyIdTokenStub` in `src/auth.js`.
+3. **Razorpay SDK**: replace `razorpayStub` in `src/payments.js`, register
+   the real webhook URL in the Razorpay dashboard.
+4. **Cloudflare Stream API**: replace `requestDirectUploadStub` in
+   `src/video.js`, register the real webhook URL.
+5. Fill in every value in `.env.example` with real secrets, and never commit
+   the resulting `.env` file.
+
+## Endpoints
+
+```
+POST /api/auth/session              exchange a provider ID token for a session
+POST /api/auth/refresh              refresh the access token
+POST /api/auth/logout               revoke all sessions for the user
+
+POST /api/subscribe                 start a subscription
+POST /api/subscribe/confirm         verify checkout signature, activate
+POST /api/subscribe/cancel          cancel at period end
+GET  /api/subscribe/status          subscription + payment history
+POST /api/admin/payments/:id/refund admin-only refund
+
+POST /api/admin/episodes/upload-url admin: request a direct-upload URL
+PATCH /api/admin/episodes/:id       admin: publish/unpublish/feature/schedule
+GET  /api/episodes/:id/playback     gated: returns a signed playback URL
+POST /api/episodes/:id/progress     continue-watching position update
+
+POST /webhooks/razorpay             Razorpay events (raw body, signature-checked)
+POST /webhooks/stream               Cloudflare Stream processing status
+GET  /health                        liveness check
+```
+
+## Note on this sandbox
+
+This code was written and syntax-checked here, but not installed/run end to
+end — this container has no network access, so `npm install` can't reach the
+npm registry. Run the steps above on your own machine to install
+dependencies and start the server for real.
+```
+
+## FILE: package.json
+
+```json
+{
+  "name": "shadow-tv-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
+```
+
+## FILE: .env.example
+
+```
+# Server
+PORT=4000
+APP_URL=http://localhost:5173
+
+# Session secrets — generate real random strings for these, never reuse the example
+ACCESS_SECRET=replace-with-a-long-random-string
+REFRESH_SECRET=replace-with-a-different-long-random-string
+
+# Firebase Admin (auth) — from your Firebase project's service account
+FIREBASE_PROJECT_ID=
+FIREBASE_CLIENT_EMAIL=
+FIREBASE_PRIVATE_KEY=
+
+# Razorpay (payments)
+RAZORPAY_KEY_ID=
+RAZORPAY_KEY_SECRET=
+RAZORPAY_WEBHOOK_SECRET=
+RAZORPAY_PLAN_ID=
+
+# Cloudflare Stream (video)
+CF_ACCOUNT_ID=
+CF_STREAM_API_TOKEN=
+STREAM_SIGNING_KEY_ID=
+STREAM_SIGNING_KEY=
+```
+
+## FILE: server.js
+
+```javascript
+try { require("dotenv").config(); } catch { /* dotenv not installed — fine in deployment where env vars are set directly */ }
+
+const express = require("express");
+const cors = require("cors");
+const cookieParser = require("cookie-parser");
+const rateLimit = require("express-rate-limit");
+
+const authModule = require("./src/auth");
+const paymentsModule = require("./src/payments");
+const videoModule = require("./src/video");
+
+const app = express();
+const PORT = process.env.PORT || 4000;
+
+app.use(cors({ origin: process.env.APP_URL || "http://localhost:5173", credentials: true }));
+app.use(cookieParser());
+
+// Webhooks need the raw/JSON body for signature verification, so they're
+// mounted at their own exact paths, before the general express.json() below.
+app.post("/webhooks/razorpay", express.raw({ type: "*/*" }), paymentsModule.webhookHandler);
+app.post("/webhooks/stream", express.json(), videoModule.webhookHandler);
+
+app.use(express.json());
+
+// Rate-limit the endpoints that are the classic abuse targets: auth and payments.
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
+const subscribeLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20 });
+
+app.use("/api/auth", authLimiter, authModule.router);
+app.use("/api", subscribeLimiter, paymentsModule.router);
+app.use("/api", videoModule.router);
+
+app.get("/health", (req, res) => res.json({ ok: true }));
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: "Something went wrong" });
+});
+
+app.listen(PORT, () => console.log(`Shadow TV backend listening on port ${PORT}`));
+```
+
+## FILE: src/db.js
+
+```javascript
+// In-memory store. Swap every function body here for real Postgres/Mongo
+// queries — every other file in this project talks to the database only
+// through this module, so that's the one place a real DB integration touches.
+
+const users = new Map(); // id -> user
+const subscriptions = new Map(); // userId -> subscription
+const payments = []; // { id, userId, razorpayPaymentId, amount, status, refundId }
+const episodes = new Map(); // id -> episode
+const refreshTokens = new Map(); // userId -> Set<token>
+
+let nextId = 1;
+const id = () => String(nextId++);
+
+module.exports = {
+  users: {
+    findByFirebaseUid(uid) {
+      return [...users.values()].find(u => u.firebaseUid === uid) || null;
+    },
+    create({ firebaseUid, email, phone }) {
+      const user = { id: id(), firebaseUid, email, phone, role: "user", displayName: email || phone };
+      users.set(user.id, user);
+      return user;
+    },
+    find(userId) {
+      return users.get(userId) || null;
+    }
+  },
+
+  subscriptions: {
+    findByUser(userId) {
+      return subscriptions.get(userId) || null;
+    },
+    upsert(userId, fields) {
+      const existing = subscriptions.get(userId) || { userId };
+      const updated = { ...existing, ...fields };
+      subscriptions.set(userId, updated);
+      return updated;
+    },
+    findByRazorpayId(razorpaySubscriptionId) {
+      return [...subscriptions.values()].find(s => s.razorpaySubscriptionId === razorpaySubscriptionId) || null;
+    }
+  },
+
+  payments: {
+    create(fields) {
+      const record = { id: id(), ...fields };
+      payments.push(record);
+      return record;
+    },
+    findByRazorpayId(razorpayPaymentId) {
+      return payments.find(p => p.razorpayPaymentId === razorpayPaymentId) || null;
+    },
+    findByRefundId(refundId) {
+      return payments.find(p => p.refundId === refundId) || null;
+    },
+    listByUser(userId) {
+      return payments.filter(p => p.userId === userId);
+    }
+  },
+
+  episodes: {
+    create(fields) {
+      const episode = { id: id(), status: "processing", membersOnly: true, published: false, ...fields };
+      episodes.set(episode.id, episode);
+      return episode;
+    },
+    find(episodeId) {
+      return episodes.get(episodeId) || null;
+    },
+    updateByStreamId(streamVideoId, fields) {
+      const episode = [...episodes.values()].find(e => e.streamVideoId === streamVideoId);
+      if (!episode) return null;
+      Object.assign(episode, fields);
+      return episode;
+    }
+  },
+
+  refreshTokens: {
+    store(userId, token) {
+      if (!refreshTokens.has(userId)) refreshTokens.set(userId, new Set());
+      refreshTokens.get(userId).add(token);
+    },
+    isValid(userId, token) {
+      return refreshTokens.get(userId)?.has(token) ?? false;
+    },
+    revokeAll(userId) {
+      refreshTokens.delete(userId);
+    }
+  }
+};
+```
+
+## FILE: src/auth.js
+
+```javascript
+const express = require("express");
+const jwt = require("jsonwebtoken");
+const db = require("./db");
+
+const router = express.Router();
+const ACCESS_SECRET = process.env.ACCESS_SECRET;
+const REFRESH_SECRET = process.env.REFRESH_SECRET;
+
+// --- Replace this with a real Firebase Admin SDK call in production ---
+//   const admin = require("firebase-admin");
+//   const decoded = await admin.auth().verifyIdToken(idToken);
+// This stub exists so the project runs without real Firebase credentials.
+async function verifyIdTokenStub(idToken) {
+  if (!idToken || typeof idToken !== "string" || idToken.length < 10) {
+    throw new Error("Invalid token");
+  }
+  // Demo only: derive a fake stable uid from the token string.
+  return { uid: `demo-${idToken.slice(0, 12)}`, email: `${idToken.slice(0, 6)}@example.com`, phone_number: null };
+}
+
+function issueSession(res, user) {
+  const accessToken = jwt.sign({ sub: user.id, role: user.role }, ACCESS_SECRET, { expiresIn: "15m" });
+  const refreshToken = jwt.sign({ sub: user.id }, REFRESH_SECRET, { expiresIn: "30d" });
+  db.refreshTokens.store(user.id, refreshToken);
+
+  res.cookie("refresh_token", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    maxAge: 30 * 24 * 60 * 60 * 1000
+  });
+
+  return accessToken;
+}
+
+// POST /api/auth/session — exchange a verified provider ID token for our own session
+router.post("/session", async (req, res) => {
+  const { idToken } = req.body;
+  let decoded;
+  try {
+    decoded = await verifyIdTokenStub(idToken);
+  } catch {
+    return res.status(401).json({ error: "Invalid or expired token" });
+  }
+
+  let user = db.users.findByFirebaseUid(decoded.uid);
+  if (!user) {
+    user = db.users.create({ firebaseUid: decoded.uid, email: decoded.email ?? null, phone: decoded.phone_number ?? null });
+  }
+
+  const accessToken = issueSession(res, user);
+  res.json({ accessToken, user: { id: user.id, email: user.email, phone: user.phone, role: user.role } });
+});
+
+// POST /api/auth/refresh — mint a new access token from the httpOnly refresh cookie
+router.post("/refresh", (req, res) => {
+  const token = req.cookies?.refresh_token;
+  if (!token) return res.status(401).json({ error: "No session" });
+
+  try {
+    const decoded = jwt.verify(token, REFRESH_SECRET);
+    if (!db.refreshTokens.isValid(decoded.sub, token)) throw new Error("revoked");
+    const accessToken = jwt.sign({ sub: decoded.sub }, ACCESS_SECRET, { expiresIn: "15m" });
+    res.json({ accessToken });
+  } catch {
+    res.status(401).json({ error: "Session expired, please sign in again" });
+  }
+});
+
+// POST /api/auth/logout
+router.post("/logout", (req, res) => {
+  const token = req.cookies?.refresh_token;
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, REFRESH_SECRET);
+      db.refreshTokens.revokeAll(decoded.sub);
+    } catch { /* already invalid, nothing to revoke */ }
+  }
+  res.clearCookie("refresh_token");
+  res.json({ ok: true });
+});
+
+function requireAuth(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: "Sign in required" });
+
+  try {
+    req.user = jwt.verify(token, ACCESS_SECRET);
+    next();
+  } catch {
+    res.status(401).json({ error: "Sign in required" });
+  }
+}
+
+function requireAdmin(req, res, next) {
+  requireAuth(req, res, () => {
+    const user = db.users.find(req.user.sub);
+    if (!user || user.role !== "admin") return res.status(403).json({ error: "Admin access required" });
+    next();
+  });
+}
+
+module.exports = { router, requireAuth, requireAdmin };
+```
+
+## FILE: src/payments.js
+
+```javascript
+const express = require("express");
+const crypto = require("crypto");
+const db = require("./db");
+const { requireAuth, requireAdmin } = require("./auth");
+
+const router = express.Router();
+
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
+const RAZORPAY_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET;
+const RAZORPAY_PLAN_ID = process.env.RAZORPAY_PLAN_ID;
+
+// --- Replace with the real `razorpay` SDK in production ---
+//   const Razorpay = require("razorpay");
+//   const razorpay = new Razorpay({ key_id: RAZORPAY_KEY_ID, key_secret: RAZORPAY_KEY_SECRET });
+// This stub exists so the project runs without live Razorpay credentials.
+const razorpayStub = {
+  subscriptions: {
+    async create({ plan_id }) {
+      return { id: `sub_demo_${Date.now()}`, plan_id, status: "created" };
+    },
+    async cancel(id, opts) {
+      return { id, status: opts?.cancel_at_cycle_end ? "cancel_pending" : "cancelled" };
+    }
+  },
+  payments: {
+    async refund(paymentId, { amount, notes } = {}) {
+      return { id: `rfnd_demo_${Date.now()}`, payment_id: paymentId, amount, notes, status: "processed" };
+    }
+  }
+};
+
+function addOneMonth(date) {
+  const d = new Date(date);
+  d.setMonth(d.getMonth() + 1);
+  return d;
+}
+
+// POST /api/subscribe — start a subscription for the signed-in user
+router.post("/subscribe", requireAuth, async (req, res) => {
+  const subscription = await razorpayStub.subscriptions.create({ plan_id: RAZORPAY_PLAN_ID || "plan_demo" });
+
+  db.subscriptions.upsert(req.user.sub, {
+    razorpaySubscriptionId: subscription.id,
+    status: "created"
+  });
+
+  res.json({ subscriptionId: subscription.id, keyId: RAZORPAY_KEY_ID || "rzp_test_demo" });
+});
+
+// POST /api/subscribe/confirm — verify the checkout signature, then activate
+router.post("/subscribe/confirm", requireAuth, (req, res) => {
+  const { razorpay_payment_id, razorpay_subscription_id, razorpay_signature } = req.body;
+
+  const expected = crypto
+    .createHmac("sha256", RAZORPAY_KEY_SECRET || "demo_secret")
+    .update(`${razorpay_payment_id}|${razorpay_subscription_id}`)
+    .digest("hex");
+
+  if (expected !== razorpay_signature) {
+    return res.status(400).json({ error: "Signature mismatch" });
+  }
+
+  db.subscriptions.upsert(req.user.sub, {
+    razorpaySubscriptionId: razorpay_subscription_id,
+    status: "active",
+    currentPeriodEnd: addOneMonth(new Date())
+  });
+
+  db.payments.create({
+    userId: req.user.sub,
+    razorpayPaymentId: razorpay_payment_id,
+    amount: 500,
+    status: "paid"
+  });
+
+  res.json({ ok: true });
+});
+
+// POST /api/subscribe/cancel — cancel at period end, keep access until then
+router.post("/subscribe/cancel", requireAuth, async (req, res) => {
+  const sub = db.subscriptions.findByUser(req.user.sub);
+  if (!sub) return res.status(404).json({ error: "No subscription found" });
+
+  await razorpayStub.subscriptions.cancel(sub.razorpaySubscriptionId, { cancel_at_cycle_end: 1 });
+  db.subscriptions.upsert(req.user.sub, { status: "cancel_pending" });
+  res.json({ ok: true });
+});
+
+// GET /api/subscribe/status — for the dashboard
+router.get("/subscribe/status", requireAuth, (req, res) => {
+  const sub = db.subscriptions.findByUser(req.user.sub);
+  res.json({ subscription: sub || { status: "none" }, payments: db.payments.listByUser(req.user.sub) });
+});
+
+// POST /api/admin/payments/:paymentId/refund — admin-triggered only, never a user endpoint
+router.post("/admin/payments/:paymentId/refund", requireAdmin, async (req, res) => {
+  const refund = await razorpayStub.payments.refund(req.params.paymentId, {
+    amount: req.body.amount,
+    notes: { reason: req.body.reason || "Admin-initiated refund" }
+  });
+
+  const payment = db.payments.findByRazorpayId(req.params.paymentId);
+  if (payment) Object.assign(payment, { status: "refunded", refundId: refund.id });
+
+  res.json({ ok: true, refund });
+});
+
+// Webhook handler — mounted directly at /webhooks/razorpay in server.js
+// (not on this router) with express.raw() so the signature check sees the
+// exact bytes Razorpay sent.
+function webhookHandler(req, res) {
+  const signature = req.headers["x-razorpay-signature"];
+  const expected = crypto
+    .createHmac("sha256", RAZORPAY_WEBHOOK_SECRET || "demo_webhook_secret")
+    .update(req.body)
+    .digest("hex");
+
+  if (signature && signature !== expected) {
+    return res.status(400).send("Invalid signature");
+  }
+
+  let event;
+  try {
+    event = JSON.parse(req.body.toString("utf8"));
+  } catch {
+    return res.status(400).send("Invalid payload");
+  }
+
+  switch (event.event) {
+    case "subscription.charged": {
+      const sub = db.subscriptions.findByRazorpayId(event.payload?.subscription?.entity?.id);
+      if (sub) db.subscriptions.upsert(sub.userId, { status: "active", currentPeriodEnd: addOneMonth(new Date()) });
+      break;
+    }
+    case "subscription.pending": {
+      const sub = db.subscriptions.findByRazorpayId(event.payload?.subscription?.entity?.id);
+      if (sub) db.subscriptions.upsert(sub.userId, { status: "past_due" });
+      // sendDunningEmail(sub.userId, "payment_failed_retry") goes here
+      break;
+    }
+    case "subscription.halted":
+    case "subscription.cancelled": {
+      const sub = db.subscriptions.findByRazorpayId(event.payload?.subscription?.entity?.id);
+      if (sub) db.subscriptions.upsert(sub.userId, { status: "expired" });
+      // sendDunningEmail(sub.userId, "subscription_expired") goes here
+      break;
+    }
+    case "refund.processed": {
+      const payment = db.payments.findByRefundId(event.payload?.refund?.entity?.id);
+      if (payment) payment.status = "refunded";
+      break;
+    }
+    case "refund.failed": {
+      const payment = db.payments.findByRefundId(event.payload?.refund?.entity?.id);
+      if (payment) payment.status = "refund_failed";
+      break;
+    }
+  }
+
+  res.json({ received: true }); // ack fast; do slow work async in a real deployment
+}
+
+function hasActiveAccess(subscription) {
+  if (!subscription) return false;
+  const withinPeriod = subscription.currentPeriodEnd && new Date(subscription.currentPeriodEnd) > new Date();
+  return ["active", "past_due", "cancel_pending"].includes(subscription.status) && withinPeriod;
+}
+
+module.exports = { router, webhookHandler, hasActiveAccess };
+```
+
+## FILE: src/video.js
+
+```javascript
+const express = require("express");
+const jwt = require("jsonwebtoken");
+const db = require("./db");
+const { requireAuth, requireAdmin } = require("./auth");
+const { hasActiveAccess } = require("./payments");
+
+const router = express.Router();
+
+const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
+const CF_STREAM_API_TOKEN = process.env.CF_STREAM_API_TOKEN;
+const STREAM_SIGNING_KEY_ID = process.env.STREAM_SIGNING_KEY_ID;
+const STREAM_SIGNING_KEY = process.env.STREAM_SIGNING_KEY;
+
+// --- Replace with a real fetch() to the Cloudflare Stream API in production ---
+//   POST https://api.cloudflare.com/client/v4/accounts/{account}/stream/direct_upload
+// This stub exists so the project runs without live Stream credentials.
+async function requestDirectUploadStub() {
+  const uid = `stream_demo_${Date.now()}`;
+  return { uploadURL: `https://upload.stream.example/${uid}`, uid };
+}
+
+// POST /api/admin/episodes/upload-url — admin requests a one-time direct-upload URL
+router.post("/admin/episodes/upload-url", requireAdmin, async (req, res) => {
+  const { animeId, episodeNumber, title } = req.body;
+  if (!animeId || !episodeNumber) return res.status(400).json({ error: "animeId and episodeNumber are required" });
+
+  const stream = await requestDirectUploadStub();
+
+  const episode = db.episodes.create({
+    animeId,
+    number: episodeNumber,
+    title: title || `Episode ${episodeNumber}`,
+    streamVideoId: stream.uid
+  });
+
+  res.json({ uploadUrl: stream.uploadURL, episodeId: episode.id });
+});
+
+// PATCH /api/admin/episodes/:id — publish/unpublish, feature, schedule, edit metadata
+router.patch("/admin/episodes/:id", requireAdmin, (req, res) => {
+  const episode = db.episodes.find(req.params.id);
+  if (!episode) return res.status(404).json({ error: "Episode not found" });
+
+  const { published, membersOnly, title, releaseAt } = req.body;
+  if (published !== undefined) episode.published = !!published;
+  if (membersOnly !== undefined) episode.membersOnly = !!membersOnly;
+  if (title) episode.title = title;
+  if (releaseAt) episode.releaseAt = releaseAt;
+
+  res.json({ episode });
+});
+
+// Webhook handler — mounted directly at /webhooks/stream in server.js
+// (not on this router).
+function webhookHandler(req, res) {
+  const { uid, status } = req.body;
+  const episode = db.episodes.updateByStreamId(uid, { status: status?.state === "ready" ? "ready" : "failed" });
+  if (!episode) return res.status(404).json({ error: "Unknown video id" });
+  res.json({ ok: true });
+}
+
+// GET /api/episodes/:id/playback — the actual access-control choke point
+router.get("/episodes/:id/playback", requireAuth, (req, res) => {
+  const episode = db.episodes.find(req.params.id);
+  if (!episode || episode.status !== "ready" || !episode.published) {
+    return res.status(404).json({ error: "Episode not available" });
+  }
+
+  if (episode.membersOnly) {
+    const sub = db.subscriptions.findByUser(req.user.sub);
+    if (!hasActiveAccess(sub)) {
+      return res.status(402).json({ error: "Active subscription required" });
+    }
+  }
+
+  const token = jwt.sign(
+    { sub: episode.streamVideoId },
+    STREAM_SIGNING_KEY || "demo_signing_key",
+    { expiresIn: "10m", keyid: STREAM_SIGNING_KEY_ID || "demo_key_id" }
+  );
+
+  res.json({
+    playbackUrl: `https://videodelivery.net/${episode.streamVideoId}/manifest/video.m3u8?token=${token}`,
+    expiresInSeconds: 600
+  });
+});
+
+// POST /api/episodes/:id/progress — continue-watching, called every ~10s by the player
+router.post("/episodes/:id/progress", requireAuth, (req, res) => {
+  // In a real DB: db.watchProgress.upsert({ userId: req.user.sub, episodeId: req.params.id, positionSeconds: req.body.positionSeconds })
+  res.json({ ok: true });
+});
+
+module.exports = { router, webhookHandler };
+```

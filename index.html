@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#090b12"><meta name="description" content="SHADOW TV — discover and stream legally available anime.">
+<link rel="manifest" href="/manifest.webmanifest"><link rel="stylesheet" href="/styles.css">
+<title>SHADOW TV — Anime Streaming</title>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#"><span class="brand-mark">影</span><span>SHADOW <b>TV</b></span></a>
+  <label class="search"><span>⌕</span><input id="search" type="search" placeholder="Search anime, genre, language…" aria-label="Search anime"></label>
+  <div class="header-actions"><button id="signin" class="outline">Sign in</button><button id="adminBtn" class="primary hidden">Admin</button><button id="signout" class="outline hidden">Sign out</button></div>
+</header>
+<main>
+  <section class="hero">
+    <div class="hero-content"><p class="eyebrow">YOUR NEXT WORLD AWAITS</p><h1>Enter the <span>animeverse.</span></h1>
+      <p class="hero-copy">Discover your next obsession. Explore Hindi-dubbed favorites, legendary adventures, and new worlds.</p>
+      <div class="hero-actions"><a href="#catalog" class="primary link-button">Explore anime <span>↗</span></a><span class="free-label">✦ Free to watch</span></div>
+    </div><div class="hero-art" aria-hidden="true"><div class="moon"></div><div class="torii"></div><div class="hero-kanji">影</div><div class="hero-caption">WATCH<br><b>YOUR WAY</b></div></div>
+  </section>
+  <section class="quick-filters" aria-label="Quick filters"><button class="chip active" data-filter="All">All anime</button><button class="chip" data-filter="Hindi Dub">Hindi dubbed</button><button class="chip" data-filter="Action">Action</button><button class="chip" data-filter="Romance">Romance</button><button class="chip" data-filter="Fantasy">Fantasy</button><button class="chip" data-filter="Adventure">Adventure</button></section>
+  <section id="catalog" class="catalog-section"><div class="section-heading"><div><p class="eyebrow">FIND YOUR NEXT FAVORITE</p><h2>Explore the collection</h2></div><span id="resultCount" class="muted"></span></div><div id="catalogGrid" class="anime-grid"><div class="empty-state">Connect Supabase and add legally licensed titles to display your catalog.</div></div></section>
+  <section class="feature-strip"><div><span class="feature-icon">▶</span><h3>Built for watching</h3><p>Responsive playback layout for Android and Chrome.</p></div><div><span class="feature-icon">✦</span><h3>Community ratings</h3><p>Rate each title from one to five stars.</p></div><div><span class="feature-icon">◈</span><h3>One owner</h3><p>Uploads are restricted on the server to the verified owner account.</p></div></section>
+</main>
+<footer><a class="brand small" href="#"><span class="brand-mark">影</span><span>SHADOW <b>TV</b></span></a><span>Stream only content you have permission to distribute.</span><span>© <span id="year"></span> SHADOW TV</span></footer>
+
+<dialog id="authDialog"><form method="dialog" class="dialog-card"><button class="dialog-close" aria-label="Close">×</button><p class="eyebrow">WELCOME BACK</p><h2>Sign in to SHADOW TV</h2><p class="muted">Use Google to sign in. Only the designated verified account can manage videos.</p><button type="button" id="googleLogin" class="google-btn"><span>G</span> Continue with Google</button><p id="authMessage" class="message"></p><small>Signing in lets you rate titles. Viewing publicly available episodes does not require payment.</small></form></dialog>
+<dialog id="playerDialog"><div class="player-shell"><button class="dialog-close player-close" aria-label="Close">×</button><div id="playerBody"></div></div></dialog>
+<dialog id="adminDialog"><div class="dialog-card admin-card"><button class="dialog-close" id="closeAdmin" aria-label="Close">×</button><p class="eyebrow">OWNER CONSOLE</p><h2>Manage anime</h2><p class="muted">Only the server-verified owner can publish changes.</p>
+<form id="uploadForm" class="upload-form"><label>Anime title<input name="title" required maxlength="120" placeholder="Title"></label><label>Synopsis<textarea name="description" maxlength="1200" placeholder="Short description"></textarea></label><div class="form-row"><label>Language<select name="language"><option>Hindi Dub</option><option>Japanese</option><option>English Dub</option><option>Other</option></select></label><label>Genre<input name="genre" placeholder="Action, Fantasy"></label></div><div class="form-row"><label>Season<input name="season" type="number" min="1" value="1" required></label><label>Episode<input name="episode" type="number" min="1" value="1" required></label></div><label>Licensed video file<input name="video" type="file" accept="video/mp4,video/webm,video/ogg" required></label><label>Poster image URL (optional)<input name="poster_url" type="url" placeholder="https://…"></label><label class="checkline"><input name="publish" type="checkbox" checked> Publish after upload</label><button class="primary" type="submit">Upload episode</button><p id="uploadMessage" class="message"></p></form><div id="ownerList"></div></div></dialog>
+<script type="module" src="/app.js"></script>
+</body></html>
