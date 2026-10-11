@@ -1,49 +1,55 @@
-# SHADOW TV — starter project
+# Shadow TV — Premium Anime Streaming Starter
 
-Responsive anime-catalog/PWA frontend with Supabase Auth, Postgres, RLS and private video storage.
+A responsive Next.js + TypeScript starter for **Shadow TV — Enter the World of Anime**. It includes a bright cream/lavender visual system, home page, searchable catalog, detail pages, an MP4/HLS demo player, Supabase email authentication, SQL schema/RLS policies, and an admin upload flow using Cloudflare Stream direct uploads.
 
-## Important status
-This is a deployable starter, not a live hosted service. You must connect a Supabase project, configure Google OAuth, run the SQL, and deploy the files. It intentionally ships with no anime videos. Upload only content and artwork you are legally authorized to distribute.
+## Requirements
+- Node.js 20+
+- A Supabase project
+- A Cloudflare account with Stream enabled for real video uploads
+- Rights to distribute every video and image you publish
 
-## 1. Create backend
-1. Create a project at https://supabase.com/.
-2. Open **SQL Editor** and run `supabase/schema.sql`.
-3. In **Project Settings → API**, copy Project URL and anon/public key.
-4. In `app.js`, replace `YOUR_SUPABASE_PROJECT_URL` and `YOUR_SUPABASE_ANON_KEY`. The anon key is intended for browser use with RLS enabled. Never use a service-role key in frontend code.
-5. In Authentication → Providers, enable Google and configure the OAuth client in Google Cloud Console. Add the site URL and callback URL shown by Supabase to the authorized redirect URIs. Add your deployed site URL to Supabase Auth URL configuration.
-6. Use the Google account `rehanshaik5455074@gmail.com` for the owner. Verify that account's email in Google/Supabase Auth. The owner check is exact-email plus verified-email, and RLS checks it again.
+## Run locally
+1. Extract this folder and run `npm install`.
+2. Copy `.env.example` to `.env.local`.
+3. Fill in the Supabase project URL and anon key. Keep `SUPABASE_SERVICE_ROLE_KEY` and `CLOUDFLARE_STREAM_TOKEN` server-only; never prefix them with `NEXT_PUBLIC_`.
+4. In Supabase SQL Editor, run `supabase/schema.sql`.
+5. In Supabase Auth settings, configure your local and production redirect URLs.
+6. Run `npm run dev` and open `http://localhost:3000`.
 
-## 2. Deploy frontend
-You can deploy this folder to Netlify, Vercel, or another static host. For Netlify, create a new site from the folder/repository; publish directory is the project root. HTTPS is required for production OAuth and PWA behavior. No build command is needed.
+The site can be explored without backend credentials. Authentication and protected uploads need the Supabase setup.
 
-## 3. Test security before publishing
-- Sign in as the owner and confirm upload works.
-- Sign in with a different verified Google account; confirm it cannot insert/update/delete rows or upload/delete objects.
-- Test direct REST calls, not only hidden buttons.
-- Do not create any broad storage read policy. This starter uses short-lived signed URLs for browser playback; for public viewing, deploy the `episode-url` Edge Function and update `app.js` to request a URL from it rather than minting signed URLs directly from the client.
-- Before real production use, move all video URL minting into the Edge Function, add rate limits and upload validation, and verify the `email_verified` claim for your Supabase Auth provider/version. Policies deliberately fail closed if the claim is absent.
-- Test deletion cleanup and database/storage consistency. Consider a scheduled cleanup for orphaned objects.
+## Cloudflare Stream upload
+The admin page requests a short-lived direct-upload URL from `/api/admin/stream-upload`. That server route checks the current Supabase user and their `profiles.role` before asking Cloudflare for an upload URL. The Cloudflare API token stays on the server. Direct uploads use the provider's resumable/direct upload workflow; check current Cloudflare Stream upload requirements and maximum duration/size limits for your account.
 
-## 4. Playback endpoint integration
-In `app.js`, `openAnime()` currently calls `createSignedUrl` in the browser for a quick starter experience. For a production privacy boundary, replace that block with:
-```js
-const { data: { session } } = await supabase.auth.getSession();
-const { data, error } = await supabase.functions.invoke('episode-url', {
-  body: { anime_id: activeAnime.id },
-  headers: { Authorization: `Bearer ${session.access_token}` }
-});
-videoUrl = error ? '' : (data?.url || '');
-```
-Deploy the function with `supabase functions deploy episode-url`. Anonymous viewing is not enabled by this endpoint; if anonymous playback is desired, adapt it deliberately using a server-side public-episode allowlist and abuse controls.
+**Important production work before opening uploads to users:**
+- Add rate limits and request-size limits at the edge.
+- Enforce allowed MIME type, maximum file size and duration server-side/provider-side.
+- Persist provider webhook status changes; verify webhook signatures before updating `video_assets.status`.
+- Link each episode to a season and validate the episode relationship before accepting upload requests.
+- Use signed/allowed-origin playback URLs or tokenized playback for private content.
+- Add a dedicated server-side playback endpoint that checks subscription/entitlement before issuing playback tokens.
+- Add robust upload progress UI and retry/resume behavior. Browser direct upload behavior varies by provider and account configuration.
+- Add CSRF/origin checks and security monitoring appropriate to your deployment.
+- Build complete CRUD screens for anime/seasons/episodes, poster and subtitle management, and audit logs.
 
-## Included
-- Mobile responsive dark anime UI, search and category filters
-- Google OAuth sign-in
-- Owner dashboard form, episode metadata, upload and delete controls
-- 1–5 star ratings for signed-in users
-- Supabase SQL schema and RLS/storage restrictions
-- PWA manifest and icon
-- No payment, UPI, QR or subscription features
+## Demo data and media
+Sample titles and remote landscape imagery are for layout demonstration. They are not a licensed streaming catalog, and the player intentionally starts without a video URL. Paste a stream URL you own or have permission to use. For production, use licensed artwork and a dedicated video host such as Cloudflare Stream or Mux.
 
-## Production caveat
-A static frontend alone cannot securely enforce authorization. The database/storage policies are the security boundary; review and test them with your own project and provider claims before launching.
+## Admin setup
+1. Create an account through `/signup`.
+2. Find the matching user in Supabase Authentication and copy their UUID.
+3. As project owner, run `update public.profiles set role='admin' where id='YOUR-AUTH-USER-UUID';` in SQL Editor.
+4. Sign in and open `/admin`.
+
+The browser page checks the user's profile for usability; the upload API independently verifies the same role server-side. Do not give admin roles to untrusted users.
+
+## Deploy to Vercel
+1. Push the project to a private/public Git repository you control.
+2. Import it in Vercel as a Next.js project.
+3. Add the environment variables from `.env.example` in Vercel Project Settings. Keep service-role and Cloudflare tokens server-only.
+4. Add the Vercel production URL to Supabase Auth redirect settings.
+5. Configure provider webhooks and production playback restrictions before publishing episodes.
+6. Deploy and test auth, RLS, admin denial for normal users, upload processing, playback, mobile layout, and error states.
+
+## Current scope
+This is a functional **starter project**, not a fully production-hardened streaming service. Catalog records currently use local sample data; the Supabase schema is provided for migrating to database-backed catalog queries. My List, durable watch progress, subtitle tracks, pagination from the database, and complete content CRUD remain implementation tasks. The admin route includes a real authenticated upload URL request path but should not be exposed publicly until the production safeguards above are completed.

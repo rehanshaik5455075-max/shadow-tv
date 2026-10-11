@@ -1,0 +1,3 @@
+import type { Metadata } from "next"; import "./globals.css"; import Header from "@/components/Header"; import Footer from "@/components/Footer";
+export const metadata:Metadata={title:"Shadow TV — Enter the World of Anime",description:"Discover your next favorite story on Shadow TV, a bright and elegant anime streaming experience."};
+export default function RootLayout({children}:{children:React.ReactNode}){return <html lang="en"><body><Header/>{children}<Footer/></body></html>}
